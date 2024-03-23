@@ -34,6 +34,7 @@ import pino from 'pino';
 import bs58 from 'bs58';
 import * as fs from 'fs';
 import * as path from 'path';
+import BN from 'bn.js';
 
 const transport = pino.transport({
   target: 'pino-pretty',
@@ -83,6 +84,7 @@ const SNIPE_LIST_REFRESH_INTERVAL = Number(retrieveEnvVariable('SNIPE_LIST_REFRE
 const AUTO_SELL = retrieveEnvVariable('AUTO_SELL', logger) === 'true';
 const MAX_SELL_RETRIES = Number(retrieveEnvVariable('MAX_SELL_RETRIES', logger));
 const AUTO_SELL_DELAY = Number(retrieveEnvVariable('AUTO_SELL_DELAY', logger));
+const MIN_POOL_SIZE = new BN(retrieveEnvVariable('MIN_POOL_SIZE', logger));
 
 let snipeList: string[] = [];
 
@@ -162,6 +164,27 @@ function saveTokenAccount(mint: PublicKey, accountData: MinimalMarketLayoutV3) {
 
 export async function processRaydiumPool(id: PublicKey, poolState: LiquidityStateV4) {
   if (!shouldBuy(poolState.baseMint.toString())) {
+    return;
+  }
+
+  let poolSize = new BN(poolState.swapQuoteInAmount);
+
+  poolSize = poolSize.div(new BN(10 ** quoteToken.decimals));
+
+
+  logger.info(
+    `Processing pool: ${id.toString()} with ${poolSize.toString()} ${quoteToken.symbol} in liquidity`,
+  );
+
+  if (poolSize.lt(new BN(MIN_POOL_SIZE))) {
+    logger.warn(
+      {
+        mint: poolState.baseMint,
+        pooled: poolSize.toString() + ' ' + quoteToken.symbol,
+      },
+      `Skipping pool, smaller than ${MIN_POOL_SIZE} ${quoteToken.symbol}`,
+      `Swap quote in amount: ${poolSize.toString()}`
+    );
     return;
   }
 
@@ -373,6 +396,8 @@ async function sell(accountId: PublicKey, mint: PublicKey, amount: BigNumberish)
       );
       sold = true;
     } catch (e: any) {
+      // wait for a bit before retrying
+      await new Promise((resolve) => setTimeout(resolve, 100));
       retries++;
       logger.debug(e);
       logger.error({ mint }, `Failed to sell token, retry: ${retries}/${MAX_SELL_RETRIES}`);
